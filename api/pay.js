@@ -3,8 +3,8 @@ const { setCors, isAuthorized, parseBody } = require('./_util');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 3,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  max: 3
 });
 
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
@@ -25,6 +25,7 @@ module.exports = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('begin');
+
     const findQ = ticket_no
       ? 'select * from tickets where ticket_no=$1 for update'
       : 'select * from tickets where id=$1::uuid for update';
@@ -36,7 +37,6 @@ module.exports = async (req, res) => {
     }
     const t = r.rows[0];
 
-    // Mock processing delay
     await sleep(1500);
 
     const remaining = Math.max(0, t.balance_cents - parseInt(amount_cents, 10));
