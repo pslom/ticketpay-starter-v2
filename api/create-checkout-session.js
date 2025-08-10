@@ -1,16 +1,15 @@
-const Stripe = require('stripe');
 const { Pool } = require('pg');
-const { setCors, isAuthorized, parseBody } = require('./_util');
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  connectionString: process.env.DATABASE_URL,   
+  ssl: { rejectUnauthorized: false },           
   max: 3
 });
 
 module.exports = async (req, res) => {
+ 
+};
+
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
