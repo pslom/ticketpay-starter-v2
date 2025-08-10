@@ -1,9 +1,7 @@
 const { Pool } = require('pg');
-const { setCors, isAuthorized } = require('./_util');
-
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },   // <- important
+  ssl: { rejectUnauthorized: false },   // this line is required for Supabase in test
   max: 3
 });
 
