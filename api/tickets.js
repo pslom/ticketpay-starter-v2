@@ -3,8 +3,7 @@ const { setCors, isAuthorized } = require('./_util');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Allow Supabase's cert (prevents "self-signed certificate in certificate chain")
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: false },   // <- important
   max: 3
 });
 
