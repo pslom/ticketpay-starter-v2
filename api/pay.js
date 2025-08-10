@@ -3,7 +3,7 @@ const { setCors, isAuthorized, parseBody } = require('./_util');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ssl: { rejectUnauthorized: false },   // <- important
   max: 3
 });
 
