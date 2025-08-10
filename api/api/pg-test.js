@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 module.exports = async (req, res) => {
   const cfg = {
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }, // allow test cert
+    ssl: { rejectUnauthorized: false },
     max: 1
   };
   const pool = new Pool(cfg);
