@@ -3,8 +3,9 @@ const { setCors, isAuthorized } = require('./_util');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 3, // small pool for serverless
-  ssl: { rejectUnauthorized: false }
+  // Allow Supabase's cert (prevents "self-signed certificate in certificate chain")
+  ssl: { rejectUnauthorized: false },
+  max: 3
 });
 
 module.exports = async (req, res) => {
