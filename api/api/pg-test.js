@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 module.exports = async (req, res) => {
   const cfg = {
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: false }, // allow Supabase test cert
     max: 1
   };
   const pool = new Pool(cfg);
