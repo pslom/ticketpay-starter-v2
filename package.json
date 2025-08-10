@@ -1,0 +1,14 @@
+{
+  "name": "ticketpay-starter-v2",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "@sendgrid/mail": "^7.7.0",
+    "twilio": "^4.21.0",
+    "pg": "^8.11.5"
+  }
+}
