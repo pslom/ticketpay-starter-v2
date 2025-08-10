@@ -1,15 +1,15 @@
 const { Pool } = require('pg');
-const { setCors, isAuthorized, parseBody } = require('./_util');
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },   // <- important
+  connectionString: process.env.DATABASE_URL,  
+  ssl: { rejectUnauthorized: false },           
   max: 3
 });
 
-function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
-
 module.exports = async (req, res) => {
+  
+};
+
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
