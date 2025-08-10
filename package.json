@@ -6,8 +6,8 @@
   "engines": { "node": "18.x" },
   "dependencies": {
     "@sendgrid/mail": "^7.7.0",
-    "twilio": "^4.21.0",
     "pg": "^8.11.5",
-    "stripe": "^14.0.0"
+    "stripe": "^14.0.0",
+    "twilio": "^4.21.0"
   }
 }
