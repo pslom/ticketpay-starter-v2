@@ -1,11 +1,15 @@
 const { Pool } = require('pg');
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },   // this line is required for Supabase in test
+  connectionString: process.env.DATABASE_URL,   // leave your url as-is
+  ssl: { rejectUnauthorized: false },           // <- important
   max: 3
 });
 
 module.exports = async (req, res) => {
+  // ...the rest of that endpoint’s code...
+};
+
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
