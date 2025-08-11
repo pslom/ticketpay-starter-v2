@@ -1,81 +1,66 @@
-// api/create-checkout-session.js
-const { Pool } = require('pg');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { cors, json, parseBody } = require('./_util');
+// /api/create-checkout-session.js
+const Stripe = require("stripe");
+const { Pool } = require("pg");
+const { cors, json } = require("./_shared");
 
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   max: 3
 });
 
-function calcServiceFeeCents(amountCents, targetProfitCents = 100, stripeRate = 0.029, stripeFixed = 30) {
-  const A = Number(amountCents || 0);
-  const r = stripeRate;
-  const c = stripeFixed;
-  const S = (targetProfitCents + r * A + c) / (1 - r);
-  return Math.max(0, Math.round(S));
-}
-
 module.exports = async (req, res) => {
-  cors(res, req);
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Method not allowed' }, req);
-
   try {
-    const body = await parseBody(req);
-    const ticket_no = String(body.ticket_no || '').trim();
-    if (!ticket_no) return json(res, 400, { ok: false, error: 'ticket_no is required' }, req);
+    cors(res, req);
+    if (req.method === "OPTIONS") return res.status(204).end();
+    if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+
+    const { ticket_id, email, phone } = JSON.parse(req.body || "{}");
+    if (!ticket_id) return json(res, 400, { error: "ticket_id required" });
 
     const client = await pool.connect();
     try {
-      const q = await client.query(
-        `select ticket_no, status, coalesce(remaining_cents, balance_cents, 0) as amount_cents
-         from tickets
-         where ticket_no=$1
-         limit 1`,
-        [ticket_no]
-      );
-      if (!q.rows.length) return json(res, 404, { ok: false, error: 'Ticket not found' }, req);
+      const { rows } = await client.query("select * from tickets where id = $1 limit 1", [ticket_id]);
+      if (!rows.length) return json(res, 404, { error: "Ticket not found" });
+      const t = rows[0];
 
-      const t = q.rows[0];
-      if (String(t.status || '').toLowerCase() === 'paid') {
-        return json(res, 400, { ok: false, error: 'Ticket already paid' }, req);
+      if (!["open", "pending_payment"].includes(t.status)) {
+        return json(res, 409, { error: `Cannot pay ticket in status ${t.status}` });
       }
 
-      const amountCents = Number(t.amount_cents || 0);
-      if (amountCents <= 0) return json(res, 400, { ok: false, error: 'No amount due' }, req);
-
-      const serviceFeeCents = calcServiceFeeCents(amountCents, 100); // ~$1 net
-      const line_items = [
-        {
-          price_data: { currency: 'usd', product_data: { name: `Ticket ${ticket_no}` }, unit_amount: amountCents },
-          quantity: 1
-        },
-        {
-          price_data: { currency: 'usd', product_data: { name: 'Service fee' }, unit_amount: serviceFeeCents },
-          quantity: 1
-        }
-      ];
-
-      const success_url = `${process.env.SITE_URL}/success.html?ticket_no=${encodeURIComponent(ticket_no)}&session_id={CHECKOUT_SESSION_ID}`;
-      const cancel_url  = `${process.env.SITE_URL}/cancel.html?ticket_no=${encodeURIComponent(ticket_no)}`;
+      const amount = t.remaining_cents ?? t.amount_cents;
+      if (!amount || amount <= 0) return json(res, 409, { error: "No balance due" });
 
       const session = await stripe.checkout.sessions.create({
-        mode: 'payment',
-        line_items,
-        customer_creation: 'always',
+        mode: "payment",
+        payment_method_types: ["card", "us_bank_account"],
         phone_number_collection: { enabled: true },
-        success_url,
-        cancel_url,
-        metadata: { ticket_no, service_fee_cents: String(serviceFeeCents) }
-      });
+        customer_email: email || undefined,
+        line_items: [{
+          quantity: 1,
+          price_data: {
+            currency: "usd",
+            unit_amount: amount,
+            product_data: { name: `Ticket ${t.ticket_no}` }
+          }
+        }],
+        success_url: `${process.env.SITE_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${process.env.SITE_URL}/cancel.html`,
+        metadata: {
+          ticket_id: t.id,
+          ticket_no: t.ticket_no
+        }
+      }, { idempotencyKey: `tkt-${t.id}` });
 
-      return json(res, 200, { ok: true, url: session.url }, req);
+      await client.query("update tickets set status = 'pending_payment' where id = $1", [t.id]);
+
+      return json(res, 200, { ok: true, url: session.url, id: session.id });
     } finally {
       client.release();
     }
   } catch (e) {
-    return json(res, 500, { ok: false, error: e.message }, req);
+    console.error("create-checkout-session error:", e);
+    return json(res, 500, { error: "Stripe error" });
   }
 };
