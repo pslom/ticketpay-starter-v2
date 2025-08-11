@@ -17,7 +17,7 @@ module.exports = async (req, res) => {
   const client = twilio(sid, token);
   const to = body.to;
   const message = body.body || body.message;
-  if (!to || !message) return res.status(400).json({ error: 'Need to and body' });
+  if (!to || !message) return res.status(400).json({ error: "Need 'to' and 'body'" });
 
   try {
     const resp = await client.messages.create({ to, from, body: message });
