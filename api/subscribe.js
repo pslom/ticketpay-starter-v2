@@ -9,22 +9,21 @@ const pool = new Pool({
 });
 
 module.exports = async (req, res) => {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return json(res, 405, { ok:false, error:'Method not allowed' });
+  if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Method not allowed' }, req);
 
   try {
     const { plate, state, city, email, phone, consent_sms } = await parseBody(req);
 
-    if (!plate || !state || !city) return json(res, 400, { ok:false, error:'plate, state, city are required' });
-    if (!email && !phone) return json(res, 400, { ok:false, error:'Provide email or phone' });
-    if (phone && !consent_sms) return json(res, 400, { ok:false, error:'SMS consent required' });
+    if (!plate || !state || !city) return json(res, 400, { ok: false, error: 'plate, state, city are required' }, req);
+    if (!email && !phone) return json(res, 400, { ok: false, error: 'Provide email or phone' }, req);
+    if (phone && !consent_sms) return json(res, 400, { ok: false, error: 'SMS consent required' }, req);
 
     const client = await pool.connect();
     try {
       await client.query('begin');
 
-      // upsert user
       let userId;
       if (email) {
         const r = await client.query(
@@ -45,7 +44,6 @@ module.exports = async (req, res) => {
         userId = r.rows[0].id;
       }
 
-      // upsert plate
       const p = await client.query(
         `insert into plates(user_id, plate, state, city, consent_sms_at, consent_email_at)
          values($1,$2,$3,$4,$5,$6)
@@ -70,14 +68,14 @@ module.exports = async (req, res) => {
       );
 
       await client.query('commit');
-      return json(res, 200, { ok:true });
+      return json(res, 200, { ok: true }, req);
     } catch (e) {
       await client.query('rollback');
-      return json(res, 500, { ok:false, error: e.message });
+      return json(res, 500, { ok: false, error: e.message }, req);
     } finally {
       client.release();
     }
   } catch (e) {
-    return json(res, 500, { ok:false, error: e.message });
+    return json(res, 500, { ok: false, error: e.message }, req);
   }
 };
