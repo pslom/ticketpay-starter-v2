@@ -1,3 +1,12 @@
+<script>
+const p = new URLSearchParams(location.search);
+const t = p.get('ticket_no');
+if (t) {
+  document.body.insertAdjacentHTML('beforeend',
+    `<p style="margin-top:12px">Ticket <strong>${t}</strong> paid. 
+     <a href="https://ticketpay.carrd.co">Back to site</a></p>`);
+}
+</script>
 <!doctype html><meta charset="utf-8">
 <title>Payment canceled</title>
 <h1>Payment canceled</h1>
