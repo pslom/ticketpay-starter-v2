@@ -3,10 +3,16 @@ const allowed = process.env.ALLOWED_ORIGIN || '*';
 
 function cors(res, req) {
   const origin = req?.headers?.origin || '';
+  const reqHeaders = req?.headers?.['access-control-request-headers'] || '*';
+
   res.setHeader('Vary', 'Origin');
   res.setHeader('Content-Type', 'application/json');
+
+  // allow exact origin or wildcard in test
   res.setHeader('Access-Control-Allow-Origin', allowed === '*' ? (origin || '*') : allowed);
-  res.setHeader('Access-Control-Allow-Headers', '*'); // preflight-friendly
+
+  // echo requested headers so preflight passes
+  res.setHeader('Access-Control-Allow-Headers', reqHeaders);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 }
 
