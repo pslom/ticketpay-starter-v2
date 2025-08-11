@@ -14,10 +14,19 @@ module.exports = async (req, res) => {
   if (!SENDGRID_API_KEY || !FROM_EMAIL) return res.status(500).json({ error: 'Missing SENDGRID_API_KEY or FROM_EMAIL' });
   sgMail.setApiKey(SENDGRID_API_KEY);
 
-  const to = body.to, subject = body.subject || 'Notification', html = body.html, text = body.text, replyTo = body.replyTo;
-  if (!to || (!html && !text)) return res.status(400).json({ error: 'Need to, and html or text' });
+  const to = body.to;
+  const subject = body.subject || 'Notification';
+  const html = body.html;
+  const text = body.text;
+  const replyTo = body.replyTo;
 
-  const msg = { to, from: FROM_EMAIL, subject, ...(html ? { html } : {}), ...(text ? { text } : {}), ...(replyTo ? { replyTo } : {}) };
+  if (!to || (!html && !text)) return res.status(400).json({ error: "Need 'to' and 'html' or 'text'" });
+
+  const msg = { to, from: FROM_EMAIL, subject };
+  if (html) msg.html = html;
+  if (text) msg.text = text;
+  if (replyTo) msg.replyTo = replyTo;
+
   try {
     const [resp] = await sgMail.send(msg);
     return res.status(200).json({ ok: true, status: resp.statusCode });
