@@ -7,7 +7,7 @@ const pool = new Pool({
   max: 3
 });
 
-async function handler(req, res) {
+module.exports = async (req, res) => {
   setCors(res);
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
@@ -16,26 +16,30 @@ async function handler(req, res) {
   const { ticket_no, id } = req.query || {};
   if (!ticket_no && !id) return res.status(400).json({ error: 'Provide ticket_no or id' });
 
+  const client = await pool.connect();
   try {
-    const client = await pool.connect();
-    try {
-      const q = ticket_no
-        ? `select t.*, c.name as customer_name, c.email, c.phone
-           from tickets t left join customers c on c.id=t.customer_id
-           where t.ticket_no=$1`
-        : `select t.*, c.name as customer_name, c.email, c.phone
-           from tickets t left join customers c on c.id=t.customer_id
-           where t.id=$1::uuid`;
-      const val = ticket_no ? ticket_no : id;
-      const r = await client.query(q, [val]);
-      if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
-      res.status(200).json({ ok: true, ticket: r.rows[0] });
-    } finally {
-      client.release();
-    }
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-}
+    const where = ticket_no ? 't.ticket_no=$1' : 't.id=$1::uuid';
+    const val = ticket_no ? ticket_no : id;
 
-module.exports = handler;
+    const q = `
+      select
+        t.id, t.ticket_no, t.balance_cents, t.status, t.due_at, t.created_at, t.updated_at,
+        c.id as customer_id, c.name as customer_name, c.email as customer_email, c.phone as customer_phone,
+        coalesce(sum(case when p.status='succeeded' then p.amount_cents else 0 end), 0) as paid_cents,
+        (t.balance_cents - coalesce(sum(case when p.status='succeeded' then p.amount_cents else 0 end), 0)) as remaining_cents
+      from tickets t
+      left join customers c on c.id = t.customer_id
+      left join payments p on p.ticket_id = t.id
+      where ${where}
+      group by t.id, c.id
+      limit 1;
+    `;
+    const r = await client.query(q, [val]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+    return res.status(200).json({ ok: true, ticket: r.rows[0] });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+};
