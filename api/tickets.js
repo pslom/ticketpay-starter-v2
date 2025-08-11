@@ -32,20 +32,24 @@ module.exports = async (req, res) => {
       const t = rows[0];
       if (t.status === "paid") return json(res, 409, { error: "Already paid" });
 
-      // No late-fee math — trust DB
+      // No calculations — trust DB
       return json(res, 200, {
         ok: true,
         ticket: {
           id: t.id,
           ticket_no: t.ticket_no,
+          plate: t.plate,
+          state: t.state,
           status: t.status,
+          amount_cents: t.amount_cents ?? null,
+          fees_cents: t.fees_cents ?? null,
+          discount_cents: t.discount_cents ?? null,
           remaining_cents: t.remaining_cents ?? t.amount_cents ?? null,
-          customer_name: t.customer_name ?? null,
-          customer_email: t.customer_email ?? null,
-          customer_phone: t.customer_phone ?? null,
           due_at: t.due_at,
-          created_at: t.created_at,
-          updated_at: t.updated_at
+          issued_at: t.issued_at,
+          channel: t.channel ?? null,
+          customer_id: t.customer_id ?? null,
+          evidence_url: t.evidence_url ?? null
         }
       });
     } finally {
