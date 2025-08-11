@@ -11,7 +11,7 @@ function cors(res, req) {
     .split(",").map(s => normalizeOrigin(s.trim())).filter(Boolean);
 
   if (origin && (allowed.includes("*") || allowed.includes(origin))) {
-    res.setHeader("Access-Control-Allow-Origin", origin); // single origin echo
+    res.setHeader("Access-Control-Allow-Origin", origin); // echo ONE origin
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
@@ -24,4 +24,11 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-module.exports = { cors, json };
+function isAuthorized(req) {
+  const headerKey = req.headers["x-api-key"];
+  const bearer = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const key = process.env.ADMIN_API_KEY;
+  return key && ((headerKey || bearer) === key);
+}
+
+module.exports = { cors, json, isAuthorized };
