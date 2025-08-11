@@ -18,58 +18,64 @@ function calcServiceFeeCents(amountCents, targetProfitCents = 100, stripeRate = 
 }
 
 module.exports = async (req, res) => {
-  cors(res);
+  cors(res, req);
   if (req.method === 'OPTIONS') return res.status(204).end();
-  if (req.method !== 'POST') return json(res, 405, { ok:false, error:'Method not allowed' });
+  if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'Method not allowed' }, req);
 
   try {
     const body = await parseBody(req);
     const ticket_no = String(body.ticket_no || '').trim();
-    if (!ticket_no) return json(res, 400, { ok:false, error:'ticket_no is required' });
+    if (!ticket_no) return json(res, 400, { ok: false, error: 'ticket_no is required' }, req);
 
     const client = await pool.connect();
     try {
       const q = await client.query(
         `select ticket_no, status, coalesce(remaining_cents, balance_cents, 0) as amount_cents
-         from tickets where ticket_no=$1 limit 1`, [ticket_no]
+         from tickets
+         where ticket_no=$1
+         limit 1`,
+        [ticket_no]
       );
-      if (!q.rows.length) return json(res, 404, { ok:false, error:'Ticket not found' });
+      if (!q.rows.length) return json(res, 404, { ok: false, error: 'Ticket not found' }, req);
+
       const t = q.rows[0];
-      if (String(t.status||'').toLowerCase() === 'paid') {
-        return json(res, 400, { ok:false, error:'Ticket already paid' });
+      if (String(t.status || '').toLowerCase() === 'paid') {
+        return json(res, 400, { ok: false, error: 'Ticket already paid' }, req);
       }
 
       const amountCents = Number(t.amount_cents || 0);
-      if (amountCents <= 0) return json(res, 400, { ok:false, error:'No amount due' });
+      if (amountCents <= 0) return json(res, 400, { ok: false, error: 'No amount due' }, req);
 
-      const serviceFeeCents = calcServiceFeeCents(amountCents, 100);
+      const serviceFeeCents = calcServiceFeeCents(amountCents, 100); // ~$1 net
       const line_items = [
         {
-          price_data: { currency:'usd', product_data:{ name:`Ticket ${ticket_no}` }, unit_amount: amountCents },
+          price_data: { currency: 'usd', product_data: { name: `Ticket ${ticket_no}` }, unit_amount: amountCents },
           quantity: 1
         },
         {
-          price_data: { currency:'usd', product_data:{ name:'Service fee' }, unit_amount: serviceFeeCents },
+          price_data: { currency: 'usd', product_data: { name: 'Service fee' }, unit_amount: serviceFeeCents },
           quantity: 1
         }
       ];
 
-      const success_url = `${process.env.SITE_URL}/success.html?ticket_no=${encodeURIComponent(ticket_no)}`;
+      const success_url = `${process.env.SITE_URL}/success.html?ticket_no=${encodeURIComponent(ticket_no)}&session_id={CHECKOUT_SESSION_ID}`;
       const cancel_url  = `${process.env.SITE_URL}/cancel.html?ticket_no=${encodeURIComponent(ticket_no)}`;
 
       const session = await stripe.checkout.sessions.create({
         mode: 'payment',
         line_items,
+        customer_creation: 'always',
+        phone_number_collection: { enabled: true },
         success_url,
         cancel_url,
         metadata: { ticket_no, service_fee_cents: String(serviceFeeCents) }
       });
 
-      return json(res, 200, { ok:true, url: session.url });
+      return json(res, 200, { ok: true, url: session.url }, req);
     } finally {
       client.release();
     }
   } catch (e) {
-    return json(res, 500, { ok:false, error: e.message });
+    return json(res, 500, { ok: false, error: e.message }, req);
   }
 };
