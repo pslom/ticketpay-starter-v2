@@ -1,7 +1,7 @@
 // /api/_shared.js
 function cors(res, req) {
-  const allowed = (process.env.ALLOWED_ORIGIN || "").split(",").map(s => s.trim());
-  const origin = req.headers.origin;
+  const allowed = (process.env.ALLOWED_ORIGIN || "").split(",").map(s => s.trim()).filter(Boolean);
+  const origin = req?.headers?.origin;
   if (origin && allowed.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
