@@ -1,15 +1,15 @@
 {
   "rewrites": [
     { "source": "/api/health", "destination": "/api/router" },
+    { "source": "/api/db-ping", "destination": "/api/router" },
+    { "source": "/api/dev/seed", "destination": "/api/router" },
+
     { "source": "/api/lookup", "destination": "/api/router" },
     { "source": "/api/pay", "destination": "/api/router" },
     { "source": "/api/webhooks/stripe", "destination": "/api/router" },
     { "source": "/api/webhooks/twilio", "destination": "/api/router" },
     { "source": "/api/tasks/send_due_reminders", "destination": "/api/router" },
     { "source": "/api/tasks/send_past_due", "destination": "/api/router" },
-
-    { "source": "/api/db-ping", "destination": "/api/router" },
-    { "source": "/api/dev/seed", "destination": "/api/router" },
 
     { "source": "/api/admin/sms-log", "destination": "/api/router" },
     { "source": "/api/admin/(.*)", "destination": "/api/router" },
