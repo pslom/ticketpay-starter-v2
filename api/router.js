@@ -1,30 +1,163 @@
-// api/router.js
-// One function that handles all API routes (keeps you under the Hobby plan limit)
+// api/router.js — single Serverless Function handling all API routes
+// Requires: pg, stripe, twilio  (package.json deps already added)
 
-const { URL } = require("url");
+const { URL } = require('url');
+const crypto = require('crypto');
+const { Pool } = require('pg');
+const Stripe = require('stripe');
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', { apiVersion: '2024-06-20' });
+const twilio = require('twilio');
 
-// Helper: read request body as text
-function readBody(req) {
-  return new Promise((resolve) => {
-    let data = "";
-    req.on("data", (c) => (data += c));
-    req.on("end", () => resolve(data));
-  });
+let _pool;
+function pool() {
+  if (!_pool) {
+    _pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, idleTimeoutMillis: 30000 });
+  }
+  return _pool;
 }
 
-module.exports = async (req, res) => {
-  // Figure out which logical route was requested
-  const { pathname } = new URL(req.url, `http://${req.headers.host}`);
+function json(res, code, obj) { res.statusCode = code; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(obj)); }
+function text(res, code, msg) { res.statusCode = code; res.setHeader('content-type', 'text/plain'); res.end(msg); }
+function readBody(req) { return new Promise((resolve)=>{ let d=''; req.on('data',c=>d+=c); req.on('end',()=>resolve(d)); }); }
+function e164(s=''){ return String(s).replace(/[^0-9+]/g,'').replace(/^00/,'+'); }
+function hmacSign(path, qs='') { const sec = process.env.SMS_DEEP_LINK_SECRET || 'dev-secret'; return crypto.createHmac('sha256', sec).update(path + '|' + qs).digest('hex'); }
 
-  // ---------- Health ----------
-  if (req.method === "GET" && pathname === "/api/health") {
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ ok: true, ts: new Date().toISOString() }));
-    return;
+async function ensureSchema(client) {
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS subscribers (
+      id SERIAL PRIMARY KEY,
+      plate TEXT,
+      state TEXT,
+      phone TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      opted_out BOOLEAN DEFAULT false
+    );
+    CREATE INDEX IF NOT EXISTS idx_sub_phone ON subscribers(phone);
+
+    CREATE TABLE IF NOT EXISTS tickets (
+      id SERIAL PRIMARY KEY,
+      ticket_number TEXT UNIQUE,
+      plate TEXT,
+      state TEXT,
+      amount_cents INT,
+      due_date TIMESTAMPTZ,
+      status TEXT,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id SERIAL PRIMARY KEY,
+      event_type TEXT,
+      phone TEXT,
+      ticket_number TEXT,
+      message TEXT,
+      meta_json JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS sms_sent (
+      id SERIAL PRIMARY KEY,
+      phone TEXT,
+      ticket_number TEXT,
+      sent_at TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_sms_sent_recent ON sms_sent(phone, ticket_number, sent_at);
+    CREATE INDEX IF NOT EXISTS idx_tickets_plate_state ON tickets(plate, state);
+    CREATE INDEX IF NOT EXISTS idx_tickets_due ON tickets(due_date);
+  `);
+}
+
+async function logEvent(client, { type, phone=null, ticket=null, message=null, meta=null }) {
+  await client.query(
+    `INSERT INTO audit_log (event_type, phone, ticket_number, message, meta_json) VALUES ($1,$2,$3,$4,$5)`,
+    [type, phone, ticket, message, meta || null]
+  );
+}
+
+function getTwilio() {
+  const sid = process.env.TWILIO_ACCOUNT_SID;
+  const tok = process.env.TWILIO_AUTH_TOKEN;
+  const from = process.env.TWILIO_FROM_NUMBER;
+  if (!sid || !tok || !from) return null;
+  return { client: twilio(sid, tok), from };
+}
+async function sendSMS(to, body) {
+  const T = getTwilio();
+  if (!T) { console.log('[DEV SMS]', to, body); return { dev: true }; }
+  try { return await T.client.messages.create({ to, from: T.from, body }); }
+  catch (e) { console.error('[SMS ERR]', e?.message); throw e; }
+}
+
+function verifyTwilioSig(req, bodyParams) {
+  const sig = req.headers['x-twilio-signature'];
+  const tok = process.env.TWILIO_AUTH_TOKEN;
+  if (!sig || !tok) return true; // allow in dev / manual curl tests
+  const url = `https://${req.headers.host}${req.url}`;
+  return twilio.validateRequest(tok, sig, url, bodyParams);
+}
+
+// -------- Handlers --------
+
+async function handleHealth(req, res) {
+  json(res, 200, { ok: true, ts: new Date().toISOString() });
+}
+
+/**
+ * /api/lookup — supports TWO modes:
+ * 1) { plate, state, phone? }  -> returns tickets by plate/state, optionally stores subscriber (phone)
+ * 2) { ticket_number }         -> returns the single ticket by ticket_number
+ * Always returns: { tickets: [...] }
+ */
+async function handleLookup(req, res, body) {
+  const ct = req.headers['content-type'] || '';
+  let data = {};
+  if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {} }
+  else if (ct.includes('application/x-www-form-urlencoded')) { data = Object.fromEntries(new URLSearchParams(body)); }
+
+  const ticketNumber = (data.ticket_number || '').trim();
+  const plate = (data.plate||'').trim().toUpperCase();
+  const state = (data.state||'').trim().toUpperCase();
+  const phone = e164(data.phone||'');
+
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    let tickets = [];
+
+    if (ticketNumber) {
+      const r = await client.query(
+        `SELECT ticket_number, plate, state, amount_cents, due_date, status
+         FROM tickets WHERE ticket_number=$1 LIMIT 1`, [ticketNumber]
+      );
+      tickets = r.rows;
+    } else if (plate && state) {
+      const r = await client.query(
+        `SELECT ticket_number, plate, state, amount_cents, due_date, status
+         FROM tickets WHERE plate=$1 AND state=$2 ORDER BY created_at DESC`, [plate, state]
+      );
+      tickets = r.rows;
+
+      if (phone) {
+        await client.query(
+          `INSERT INTO subscribers(plate,state,phone)
+           VALUES($1,$2,$3)
+           ON CONFLICT DO NOTHING`, [plate, state, phone]
+        );
+        await logEvent(client, { type:'sms_optin', phone, message:`Opt-in for ${plate} ${state}` });
+        await sendSMS(phone, `TicketPay: You’re opted in for alerts on ${plate} ${state}. Reply STOP to opt out.`);
+      }
+    } else {
+      return text(res, 400, 'Provide either {ticket_number} or {plate,state}');
+    }
+
+    json(res, 200, { tickets, plate, state, ticket_number: ticketNumber });
+  } finally {
+    client.release();
   }
+}
 
-  async function handleCreateCheckout(req, res, body) {
+// Create Stripe Checkout session for a ticket_number
+async function handleCreateCheckout(req, res, body) {
   const ct = req.headers['content-type'] || '';
   let data = {};
   if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {} }
@@ -35,7 +168,10 @@ module.exports = async (req, res) => {
   const client = await pool().connect();
   try {
     await ensureSchema(client);
-    const r = await client.query(`SELECT ticket_number, plate, state, amount_cents, status FROM tickets WHERE ticket_number=$1 LIMIT 1`, [tnum]);
+    const r = await client.query(
+      `SELECT ticket_number, plate, state, amount_cents, status
+       FROM tickets WHERE ticket_number=$1 LIMIT 1`, [tnum]
+    );
     if (!r.rows.length) return text(res, 404, 'not found');
     const t = r.rows[0];
     if ((t.status || '').toLowerCase() === 'paid') return text(res, 409, 'already paid');
@@ -67,53 +203,144 @@ module.exports = async (req, res) => {
   }
 }
 
-  // ---------- Lookup (placeholder) ----------
-  if (req.method === "POST" && pathname === "/api/lookup") {
-    const body = await readBody(req);
-    const ct = req.headers["content-type"] || "";
-    let data = {};
-    if (ct.includes("application/json")) {
-      try { data = JSON.parse(body || "{}"); } catch {}
-    } else if (ct.includes("application/x-www-form-urlencoded")) {
-      data = Object.fromEntries(new URLSearchParams(body));
+async function handleStripeWebhook(req, res, body) {
+  const sig = req.headers['stripe-signature'];
+  const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  let event = null;
+  if (whSecret) {
+    try { event = stripe.webhooks.constructEvent(body, sig, whSecret); }
+    catch (err) { return text(res, 400, 'Invalid signature'); }
+  } else {
+    try { event = JSON.parse(body); } catch { return text(res, 400, 'Bad JSON'); }
+  }
+
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    if (event.type === 'checkout.session.completed') {
+      const obj = event.data.object || {};
+      const tnum = obj?.metadata?.ticket_number;
+      const pi = obj.payment_intent;
+      if (tnum && pi) {
+        await client.query(`UPDATE tickets SET status='paid' WHERE ticket_number=$1`, [tnum]);
+        await logEvent(client, { type:'stripe_paid', ticket: tnum, message: 'checkout.session.completed' });
+      }
     }
-    // TODO: Replace with your real DB lookup logic.
-    // Returning an empty result keeps the build/deploy working.
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ tickets: [], state: data.state || null, plate: data.plate || null }));
-    return;
+    text(res, 200, 'ok');
+  } finally {
+    client.release();
   }
+}
 
-  // ---------- Webhooks (acknowledge fast; wire real logic later) ----------
-  if (req.method === "POST" && pathname === "/api/webhooks/stripe") {
-    // TODO: verify signature + handle events
-    res.statusCode = 200; res.end("ok"); return;
-  }
-  if (req.method === "POST" && pathname === "/api/webhooks/twilio") {
-    // TODO: verify signature + STOP/START/HELP handling
-    res.statusCode = 200; res.end("ok"); return;
-  }
+async function handleTwilioWebhook(req, res, body) {
+  const params = Object.fromEntries(new URLSearchParams(body));
+  if (!verifyTwilioSig(req, params)) return text(res, 403, 'Forbidden');
 
-  // ---------- Tasks (cron) ----------
-  if (req.method === "POST" &&
-     (pathname === "/api/tasks/send_due_reminders" || pathname === "/api/tasks/send_past_due")) {
-    // TODO: perform the sends with your rate-limit checks
-    res.statusCode = 200; res.end("queued"); return;
-  }
+  const from = e164(params.From || '');
+  const bodyText = String(params.Body || '').trim();
+  const upper = bodyText.toUpperCase();
 
-  // ---------- Admin ----------
-  if (req.method === "GET" && pathname === "/api/admin/sms-log") {
-    // TODO: return audit logs from DB
-    res.statusCode = 200;
-    res.setHeader("content-type", "application/json");
-    res.end("[]");
-    return;
-  }
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    await logEvent(client, { type:'sms_in', phone: from, message: bodyText });
 
+    if (upper === 'STOP' || upper === 'UNSUBSCRIBE') {
+      await client.query(`UPDATE subscribers SET opted_out=true WHERE phone=$1`, [from]);
+      await sendSMS(from, 'You’ve been unsubscribed. Reply START to rejoin.');
+      return text(res, 200, 'OK');
+    }
+    if (upper === 'START' || upper === 'UNSTOP') {
+      await client.query(`UPDATE subscribers SET opted_out=false WHERE phone=$1`, [from]);
+      await sendSMS(from, 'You’re now subscribed to ticket updates.');
+      return text(res, 200, 'OK');
+    }
+    if (upper === 'HELP') {
+      await sendSMS(from, 'TicketPay Help: Reply STOP to opt out. Visit https://www.ticketpay.us.com/help');
+      return text(res, 200, 'OK');
+    }
+
+    // website-first policy: only allow lookup if phone previously subscribed
+    const known = await client.query(`SELECT 1 FROM subscribers WHERE phone=$1 AND opted_out=false LIMIT 1`, [from]);
+    if (known.rowCount === 0) {
+      await sendSMS(from, 'Visit https://www.ticketpay.us.com to securely look up and pay your ticket.');
+      return text(res, 200, 'OK');
+    }
+
+    // Parse "STATE PLATE"
+    const parts = upper.split(/\s+/);
+    if (parts.length >= 2) {
+      const state = parts[0];
+      const plate = parts.slice(1).join('');
+      await sendSMS(from, `Tickets for ${plate} ${state}: https://www.ticketpay.us.com/?state=${state}&plate=${plate}`);
+      return text(res, 200, 'OK');
+    }
+
+    await sendSMS(from, 'Unrecognized command. Send HELP for options.');
+    text(res, 200, 'OK');
+  } finally {
+    client.release();
+  }
+}
+
+async function handleDueReminders(req, res) {
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    const r = await client.query(`
+      SELECT t.ticket_number, t.plate, t.state, t.due_date, s.phone
+      FROM tickets t
+      JOIN subscribers s ON s.plate=t.plate AND s.state=t.state AND s.opted_out=false
+      WHERE (t.status IS NULL OR t.status <> 'paid')
+        AND t.due_date BETWEEN now() AND now() + interval '48 hours'`);
+    let sent = 0;
+    for (const row of r.rows) {
+      const msg = `Reminder: ticket ${row.ticket_number} due ${new Date(row.due_date).toLocaleDateString('en-US', { month:'short', day:'numeric' })}. Pay: ${(process.env.SITE_URL||'')}/pay/${row.ticket_number}?sig=${hmacSign('/pay', row.ticket_number)}`;
+      await sendSMS(row.phone, msg);
+      sent++;
+    }
+    json(res, 200, { queued: sent });
+  } finally {
+    client.release();
+  }
+}
+
+async function handlePastDue(req, res) {
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    const r = await client.query(`
+      SELECT t.ticket_number, t.plate, t.state, t.due_date, s.phone
+      FROM tickets t
+      JOIN subscribers s ON s.plate=t.plate AND s.state=t.state AND s.opted_out=false
+      WHERE (t.status IS NULL OR t.status <> 'paid')
+        AND t.due_date < now() AND t.due_date > now() - interval '1 day'`);
+    let sent = 0;
+    for (const row of r.rows) {
+      const msg = `Ticket ${row.ticket_number} is past due. Pay: ${(process.env.SITE_URL||'')}/pay/${row.ticket_number}`;
+      await sendSMS(row.phone, msg);
+      sent++;
+    }
+    json(res, 200, { queued: sent });
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = async (req, res) => {
+  const { pathname } = new URL(req.url, `http://${req.headers.host}`);
+  const method = req.method || 'GET';
+  const body = method === 'GET' ? '' : await readBody(req);
+
+  if (method === 'GET'  && pathname === '/api/health') return handleHealth(req, res);
+  if (method === 'POST' && pathname === '/api/lookup') return handleLookup(req, res, body);
   if (method === 'POST' && pathname === '/api/pay') return handleCreateCheckout(req, res, body);
+  if (method === 'POST' && pathname === '/api/webhooks/stripe') return handleStripeWebhook(req, res, body);
+  if (method === 'POST' && pathname === '/api/webhooks/twilio') return handleTwilioWebhook(req, res, body);
+  if (method === 'POST' && pathname === '/api/tasks/send_due_reminders') return handleDueReminders(req, res);
+  if (method === 'POST' && pathname === '/api/tasks/send_past_due') return handlePastDue(req, res);
 
-  // Fallback
-  res.statusCode = 404;
-  res.end("Not found");
+  if (method === 'GET'  && pathname === '/api/admin/sms-log') return text(res, 200, '[]');
+
+  res.statusCode = 404; res.end('Not found');
 };
