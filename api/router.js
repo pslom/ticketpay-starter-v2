@@ -24,6 +24,49 @@ module.exports = async (req, res) => {
     return;
   }
 
+  async function handleCreateCheckout(req, res, body) {
+  const ct = req.headers['content-type'] || '';
+  let data = {};
+  if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {} }
+  else if (ct.includes('application/x-www-form-urlencoded')) { data = Object.fromEntries(new URLSearchParams(body)); }
+  const tnum = (data.ticket_number || '').trim();
+  if (!tnum) { return text(res, 400, 'ticket_number required'); }
+
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    const r = await client.query(`SELECT ticket_number, plate, state, amount_cents, status FROM tickets WHERE ticket_number=$1 LIMIT 1`, [tnum]);
+    if (!r.rows.length) return text(res, 404, 'not found');
+    const t = r.rows[0];
+    if ((t.status || '').toLowerCase() === 'paid') return text(res, 409, 'already paid');
+
+    const site = process.env.SITE_URL || `https://${req.headers.host}`;
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      payment_method_types: ['card'],
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: `Parking Ticket ${t.ticket_number}` },
+          unit_amount: Number(t.amount_cents || 0)
+        },
+        quantity: 1
+      }],
+      metadata: { ticket_number: t.ticket_number, plate: t.plate, state: t.state },
+      payment_intent_data: { metadata: { ticket_number: t.ticket_number, plate: t.plate, state: t.state }},
+      success_url: `${site}/success.html?tnum=${encodeURIComponent(t.ticket_number)}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${site}/cancel.html?tnum=${encodeURIComponent(t.ticket_number)}`
+    });
+
+    json(res, 200, { url: session.url });
+  } catch (e) {
+    console.error('pay error', e);
+    text(res, 500, 'error');
+  } finally {
+    client.release();
+  }
+}
+
   // ---------- Lookup (placeholder) ----------
   if (req.method === "POST" && pathname === "/api/lookup") {
     const body = await readBody(req);
