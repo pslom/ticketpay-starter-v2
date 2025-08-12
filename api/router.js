@@ -42,6 +42,7 @@ function allowedOrigin(req) {
 }
 
 async function ensureSchema(client) {
+  // Base tables (create if missing)
   await client.query(`
     CREATE TABLE IF NOT EXISTS subscribers (
       id SERIAL PRIMARY KEY,
@@ -55,7 +56,6 @@ async function ensureSchema(client) {
 
     CREATE TABLE IF NOT EXISTS tickets (
       id SERIAL PRIMARY KEY,
-      ticket_number TEXT UNIQUE,
       plate TEXT,
       state TEXT,
       amount_cents INT,
@@ -81,9 +81,25 @@ async function ensureSchema(client) {
       sent_at TIMESTAMPTZ DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_sms_sent_recent ON sms_sent(phone, ticket_number, sent_at);
+  `);
 
-    CREATE INDEX IF NOT EXISTS idx_tickets_plate_state ON tickets(plate, state);
-    CREATE INDEX IF NOT EXISTS idx_tickets_due ON tickets(due_date);
+  // === "MIGRATIONS" for existing DBs ===
+  // Add missing columns safely (Postgres supports IF NOT EXISTS here)
+  await client.query(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT false`);
+
+  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_number TEXT`);
+  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS amount_cents INT`);
+  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ`);
+  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status TEXT`);
+  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now()`);
+  await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_ticket_number ON tickets(ticket_number)`);
+
+  // One‑time backfill: create a unique ticket_number for rows that don't have one
+  await client.query(`
+    UPDATE tickets
+       SET ticket_number = state || '-' || plate || '-' || id
+     WHERE (ticket_number IS NULL OR ticket_number = '')
+       AND plate IS NOT NULL AND state IS NOT NULL AND id IS NOT NULL;
   `);
 }
 
