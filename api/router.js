@@ -1,7 +1,9 @@
 // api/router.js — single Serverless Function for all endpoints
-// Drop this file into /api/router.js and deploy on Vercel.
-// Requires env: DATABASE_URL, SITE_URL, STRIPE_SECRET_KEY, (optional) STRIPE_WEBHOOK_SECRET,
-//               TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, (optional) SMS_DEEP_LINK_SECRET
+// Env needed: DATABASE_URL, SITE_URL
+// Optional now (required later): STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+// Optional for SMS: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+// Optional for deep links: SMS_DEEP_LINK_SECRET
+// Optional to allow seeding: ALLOW_DEV = "true"
 
 const { URL } = require('url');
 const crypto = require('crypto');
@@ -55,7 +57,6 @@ function hmacSign(path, data = '') {
 
 // --- Schema management ------------------------------------------------------
 async function ensureSchema(client) {
-  // Core tables
   await client.query(`
     CREATE TABLE IF NOT EXISTS subscribers (
       id SERIAL PRIMARY KEY,
@@ -77,7 +78,6 @@ async function ensureSchema(client) {
       created_at TIMESTAMPTZ DEFAULT now()
     );
 
-    -- Make sure ticket_number column exists (older deployments may miss it)
     ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_number TEXT;
 
     CREATE TABLE IF NOT EXISTS audit_log (
@@ -99,7 +99,7 @@ async function ensureSchema(client) {
     CREATE INDEX IF NOT EXISTS idx_sms_sent_recent ON sms_sent(phone, ticket_number, sent_at);
   `);
 
-  // Backfill any missing/blank ticket_number values so lookups work immediately
+  // backfill ticket_number if missing
   await client.query(`
     UPDATE tickets t
       SET ticket_number = CONCAT(
@@ -107,10 +107,10 @@ async function ensureSchema(client) {
         to_char(COALESCE(t.created_at, now()), 'YYYYMMDD'), '-',
         t.id::text
       )
-      WHERE (t.ticket_number IS NULL OR t.ticket_number = '') AND t.id IS NOT NULL;
+    WHERE (t.ticket_number IS NULL OR t.ticket_number = '') AND t.id IS NOT NULL;
   `);
 
-  // Ensure UNIQUE constraint on ticket_number (guarded)
+  // add unique if possible (ignore if dupes exist)
   await client.query(`
     DO $$
     BEGIN
@@ -120,9 +120,7 @@ async function ensureSchema(client) {
       ) THEN
         BEGIN
           ALTER TABLE tickets ADD CONSTRAINT tickets_ticket_number_key UNIQUE (ticket_number);
-        EXCEPTION WHEN others THEN
-          -- If duplicates exist, ignore; app still functions with lookups.
-          NULL;
+        EXCEPTION WHEN others THEN NULL;
         END;
       END IF;
     END$$;
@@ -165,6 +163,19 @@ async function handleHealth(_req, res) {
   json(res, 200, { ok: true, ts: new Date().toISOString() });
 }
 
+// NEW: DB ping to prove DATABASE_URL works
+async function handleDbPing(_req, res) {
+  try {
+    const client = await pool().connect();
+    try {
+      const r = await client.query(`select now() as now, current_database() as db`);
+      json(res, 200, { ok: true, db: r.rows[0] });
+    } finally { client.release(); }
+  } catch (e) {
+    json(res, 500, { ok: false, error: String(e && e.message || e) });
+  }
+}
+
 // Lookup tickets either by { ticket_number } OR { plate, state }. Optional { phone } subscribes.
 async function handleLookup(req, res, body) {
   const ct = req.headers['content-type'] || '';
@@ -202,7 +213,6 @@ async function handleLookup(req, res, body) {
       tickets = r.rows;
 
       if (phone) {
-        // Insert subscriber if not exists (no unique index required)
         await client.query(
           `INSERT INTO subscribers(plate, state, phone)
            SELECT $1, $2, $3
@@ -308,7 +318,7 @@ async function handleStripeWebhook(req, res, body) {
   } finally { client.release(); }
 }
 
-// Twilio inbound webhook (STOP/START/HELP). Website‑first default.
+// Twilio inbound webhook (STOP/START/HELP). Website-first default.
 async function handleTwilioWebhook(req, res, body) {
   const params = Object.fromEntries(new URLSearchParams(body || ''));
   if (!verifyTwilioSig(req, params)) return text(res, 403, 'Forbidden');
@@ -337,14 +347,12 @@ async function handleTwilioWebhook(req, res, body) {
       return text(res, 200, 'OK');
     }
 
-    // If not a known subscriber, point them to the site (website‑first)
     const known = await client.query(`SELECT 1 FROM subscribers WHERE phone=$1 AND opted_out=false LIMIT 1`, [from]);
     if (known.rowCount === 0) {
       await sendSMS(from, 'Visit https://www.ticketpay.us.com to securely look up and pay your ticket.');
       return text(res, 200, 'OK');
     }
 
-    // Minimal parser: "STATE PLATE" → reply with link
     const parts = upper.split(/\s+/);
     if (parts.length >= 2) {
       const state = parts[0];
@@ -361,7 +369,7 @@ async function handleTwilioWebhook(req, res, body) {
   } finally { client.release(); }
 }
 
-// Simple scheduled tasks (optional). Safe no-ops if Twilio not configured.
+// Due reminders (optional)
 async function handleDueReminders(_req, res) {
   const client = await pool().connect();
   try {
@@ -384,6 +392,7 @@ async function handleDueReminders(_req, res) {
   } finally { client.release(); }
 }
 
+// Past-due (optional)
 async function handlePastDue(_req, res) {
   const client = await pool().connect();
   try {
@@ -406,6 +415,26 @@ async function handlePastDue(_req, res) {
   } finally { client.release(); }
 }
 
+// NEW: Dev seed (guarded)
+async function handleDevSeed(_req, res) {
+  if (process.env.ALLOW_DEV !== 'true') return text(res, 403, 'disabled');
+  const client = await pool().connect();
+  try {
+    await ensureSchema(client);
+    // Insert a predictable sample, safe overwrite if exists
+    const tnum = 'CA-TEST-1234';
+    await client.query(
+      `INSERT INTO tickets (ticket_number, plate, state, amount_cents, due_date, status, created_at)
+       VALUES ($1,'TEST123','CA',3500, now() + interval '14 days','unpaid', now())
+       ON CONFLICT (ticket_number) DO UPDATE SET amount_cents=EXCLUDED.amount_cents`,
+      [tnum]
+    );
+    json(res, 200, { ok: true, ticket_number: tnum });
+  } catch (e) {
+    json(res, 500, { ok: false, error: String(e && e.message || e) });
+  } finally { client.release(); }
+}
+
 // --- Router ----------------------------------------------------------------
 module.exports = async (req, res) => {
   const { pathname } = new URL(req.url, `http://${req.headers.host}`);
@@ -413,6 +442,8 @@ module.exports = async (req, res) => {
   const body = method === 'GET' ? '' : await readBody(req);
 
   if (method === 'GET'  && pathname === '/api/health') return handleHealth(req, res);
+  if (method === 'GET'  && pathname === '/api/db-ping') return handleDbPing(req, res);
+
   if (method === 'POST' && pathname === '/api/lookup') return handleLookup(req, res, body);
   if (method === 'POST' && pathname === '/api/pay') return handleCreateCheckout(req, res, body);
   if (method === 'POST' && pathname === '/api/webhooks/stripe') return handleStripeWebhook(req, res, body);
@@ -420,7 +451,9 @@ module.exports = async (req, res) => {
   if (method === 'POST' && pathname === '/api/tasks/send_due_reminders') return handleDueReminders(req, res);
   if (method === 'POST' && pathname === '/api/tasks/send_past_due') return handlePastDue(req, res);
 
-  // Minimal admin endpoint to keep logs page alive if you had one before
+  if (method === 'POST' && pathname === '/api/dev/seed') return handleDevSeed(req, res);
+
+  // keep admin route alive if you had one
   if (method === 'GET'  && pathname === '/api/admin/sms-log') return text(res, 200, '[]');
 
   res.statusCode = 404; res.end('Not found');
