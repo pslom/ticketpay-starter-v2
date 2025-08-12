@@ -1,7 +1,7 @@
 // api/router.js — single Serverless Function for all endpoints
 // Drop this file into /api/router.js and deploy on Vercel.
 // Requires env: DATABASE_URL, SITE_URL, STRIPE_SECRET_KEY, (optional) STRIPE_WEBHOOK_SECRET,
-//               TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+//               TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, (optional) SMS_DEEP_LINK_SECRET
 
 const { URL } = require('url');
 const crypto = require('crypto');
@@ -121,7 +121,7 @@ async function ensureSchema(client) {
         BEGIN
           ALTER TABLE tickets ADD CONSTRAINT tickets_ticket_number_key UNIQUE (ticket_number);
         EXCEPTION WHEN others THEN
-          -- If this throws (e.g., duplicates), we ignore; lookups still work.
+          -- If duplicates exist, ignore; app still functions with lookups.
           NULL;
         END;
       END IF;
@@ -169,8 +169,8 @@ async function handleHealth(_req, res) {
 async function handleLookup(req, res, body) {
   const ct = req.headers['content-type'] || '';
   let data = {};
-  if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {} }
-  else if (ct.includes('application/x-www-form-urlencoded')) { data = Object.fromEntries(new URLSearchParams(body)); }
+  if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {}
+  } else if (ct.includes('application/x-www-form-urlencoded')) { data = Object.fromEntries(new URLSearchParams(body)); }
 
   const ticketNumber = (data.ticket_number || '').trim();
   const plate = (data.plate || '').trim().toUpperCase();
@@ -192,7 +192,7 @@ async function handleLookup(req, res, body) {
          FROM tickets WHERE ticket_number=$1 LIMIT 1`,
         [ticketNumber]
       );
-      if (r.rows.length) tickets = [r.rows[0]]; else tickets = [];
+      tickets = r.rows.length ? [r.rows[0]] : [];
     } else {
       const r = await client.query(
         `SELECT ticket_number, plate, state, amount_cents, due_date, status
@@ -202,7 +202,7 @@ async function handleLookup(req, res, body) {
       tickets = r.rows;
 
       if (phone) {
-        // Insert subscriber if not exists (robust without unique index)
+        // Insert subscriber if not exists (no unique index required)
         await client.query(
           `INSERT INTO subscribers(plate, state, phone)
            SELECT $1, $2, $3
@@ -227,8 +227,8 @@ async function handleLookup(req, res, body) {
 async function handleCreateCheckout(req, res, body) {
   const ct = req.headers['content-type'] || '';
   let data = {};
-  if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {} }
-  else if (ct.includes('application/x-www-form-urlencoded')) { data = Object.fromEntries(new URLSearchParams(body)); }
+  if (ct.includes('application/json')) { try { data = JSON.parse(body || '{}'); } catch {}
+  } else if (ct.includes('application/x-www-form-urlencoded')) { data = Object.fromEntries(new URLSearchParams(body)); }
   const tnum = (data.ticket_number || '').trim();
   if (!tnum) { return text(res, 400, 'ticket_number required'); }
 
@@ -259,7 +259,7 @@ async function handleCreateCheckout(req, res, body) {
         quantity: 1
       }],
       metadata: { ticket_number: t.ticket_number, plate: t.plate, state: t.state },
-      payment_intent_data: { metadata: { ticket_number: t.ticket_number, plate: t.plate, state: t.state } },
+      payment_intent_data: { metadata: { ticket_number: t.ticket_number, plate: t.plate, state: t.state }},
       success_url: `${site}/success.html?tnum=${encodeURIComponent(t.ticket_number)}&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/cancel.html?tnum=${encodeURIComponent(t.ticket_number)}`
     });
@@ -289,7 +289,6 @@ async function handleStripeWebhook(req, res, body) {
     if (event.type === 'checkout.session.completed') {
       const obj = event.data.object || {};
       const tnum = obj?.metadata?.ticket_number;
-      const pi = obj.payment_intent;
       if (tnum) {
         await client.query(`UPDATE tickets SET status='paid' WHERE ticket_number=$1`, [tnum]);
         await logEvent(client, { type: 'stripe_paid', ticket: tnum, message: 'checkout.session.completed' });
