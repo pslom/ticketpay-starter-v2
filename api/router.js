@@ -23,8 +23,9 @@ function e164(s=''){ return String(s).replace(/[^0-9+]/g,'').replace(/^00/,'+');
 function hmacSign(path, qs='') { const sec = process.env.SMS_DEEP_LINK_SECRET || 'dev-secret'; return crypto.createHmac('sha256', sec).update(path + '|' + qs).digest('hex'); }
 
 async function ensureSchema(client) {
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS subscribers (
+  // Do nothing - schema is managed by schema.sql
+  return;
+}
       id SERIAL PRIMARY KEY,
       plate TEXT,
       state TEXT,
