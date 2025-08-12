@@ -62,3 +62,9 @@ drop trigger if exists trg_tickets_updated_at on tickets;
 create trigger trg_tickets_updated_at
 before update on tickets
 for each row execute procedure set_updated_at();
+
+-- Add indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_tickets_ticket_no ON tickets(ticket_no);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+CREATE INDEX IF NOT EXISTS idx_tickets_due_at ON tickets(due_at);
