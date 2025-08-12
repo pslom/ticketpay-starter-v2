@@ -1,15 +1,15 @@
 {
   "name": "ticketpay-starter-v2",
-  "version": "1.0.0",
   "private": true,
-  "type": "commonjs",
-  "engines": {
-    "node": "18.x"
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "start": "vercel dev",
+    "lint": "echo \"no lint\""
   },
   "dependencies": {
-    "@sendgrid/mail": "^7.7.0",
-    "pg": "^8.11.5",
-    "stripe": "^14.0.0",
-    "twilio": "^4.21.0"
+    "pg": "8.12.0",
+    "stripe": "15.10.0",
+    "twilio": "5.3.4"
   }
 }
