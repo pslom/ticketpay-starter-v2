@@ -8,6 +8,9 @@
     { "source": "/api/tasks/send_due_reminders", "destination": "/api/router" },
     { "source": "/api/tasks/send_past_due", "destination": "/api/router" },
 
+    { "source": "/api/db-ping", "destination": "/api/router" },
+    { "source": "/api/dev/seed", "destination": "/api/router" },
+
     { "source": "/api/admin/sms-log", "destination": "/api/router" },
     { "source": "/api/admin/(.*)", "destination": "/api/router" },
     { "source": "/api/notifications/(.*)", "destination": "/api/router" },
