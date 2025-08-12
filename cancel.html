@@ -1,7 +1,18 @@
 <!doctype html>
-<meta charset="utf-8">
-<title>Payment canceled</title>
-<body style="font-family:system-ui;padding:24px">
-  <h1>Payment canceled</h1>
-  <p>No charge was made.</p>
-</body>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment canceled — TicketPay</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head><body class="bg-slate-50">
+  <main class="max-w-lg mx-auto px-4 py-20 text-center">
+    <div class="bg-white border rounded-2xl p-8 shadow-sm">
+      <h1 class="text-2xl font-semibold">Payment canceled</h1>
+      <p class="text-slate-600 mt-2">Your ticket <span id="tn"></span> was not paid.</p>
+      <a href="/" class="inline-block mt-6 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold">Try again</a>
+    </div>
+  </main>
+<script>
+  const tn = new URLSearchParams(location.search).get('tnum') || '';
+  document.getElementById('tn').textContent = tn;
+</script>
+</body></html>
