@@ -1,10 +1,189 @@
 <!doctype html>
-<meta charset="utf-8">
-<title>TicketPay backend</title>
-<body style="font-family:system-ui;padding:24px">
-  <h1>TicketPay backend is deployed</h1>
-  <ul>
-    <li><a href="/success.html">/success.html</a></li>
-    <li><a href="/api/tickets?ticket_no=TKT-1001">/api/tickets?ticket_no=TKT-1001</a></li>
-  </ul>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TicketPay — Look up and pay your parking ticket</title>
+  <meta name="description" content="Search your plate or ticket number. Pay securely with Stripe. Optional text reminders." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { color-scheme: light only; }
+    body { font-family: Inter, system-ui, -apple-system, sans-serif; }
+  </style>
+</head>
+<body class="bg-slate-50">
+  <header class="border-b bg-white">
+    <div class="max-w-6xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="18" height="14" rx="3" stroke="#0E62FF" stroke-width="2"/><path d="M7 9h10M7 13h6" stroke="#0E62FF" stroke-width="2" stroke-linecap="round"/></svg>
+        <span class="font-semibold text-slate-900">TicketPay</span>
+      </div>
+      <div class="hidden sm:flex items-center gap-3 text-sm text-slate-500">
+        <span class="inline-flex items-center gap-1"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 21c4.97 0 9-4.03 9-9s-4.03-9-9-9-9 4.03-9 9 4.03 9 9 9Z" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg> Secure HTTPS</span>
+        <span>Payments by <strong>Stripe</strong></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto px-4 py-10">
+    <section class="bg-white rounded-2xl shadow-sm p-6 border">
+      <h1 class="text-2xl font-semibold mb-1">Find your ticket</h1>
+      <p class="text-slate-600 mb-6">Search by plate + state or by ticket number. You can add your phone to get text reminders.</p>
+
+      <div class="grid sm:grid-cols-2 gap-6">
+        <!-- Look up by Plate/State -->
+        <form id="plateForm" class="space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-slate-700">State</label>
+            <input id="state" name="state" required placeholder="CA" class="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-700">Plate</label>
+            <input id="plate" name="plate" required placeholder="TEST123" class="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-700">Phone (optional for text alerts)</label>
+            <input id="phone" name="phone" placeholder="+12025550123" class="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <p class="text-xs text-slate-500 mt-1">By entering a phone you agree to receive SMS reminders. Reply STOP to opt out.</p>
+          </div>
+          <button type="submit" class="w-full sm:w-auto inline-flex items-center justify-center rounded-lg bg-blue-600 text-white font-semibold px-4 py-2 hover:bg-blue-700">Search by plate</button>
+        </form>
+
+        <!-- Look up by Ticket # -->
+        <form id="ticketForm" class="space-y-3">
+          <div>
+            <label class="block text-sm font-medium text-slate-700">Ticket number</label>
+            <input id="ticket_number" name="ticket_number" required placeholder="CA-TEST-1234" class="mt-1 w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <button type="submit" class="w-full sm:w-auto inline-flex items-center justify-center rounded-lg bg-blue-600 text-white font-semibold px-4 py-2 hover:bg-blue-700">Search by ticket #</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="resultsCard" class="mt-8 hidden bg-white rounded-2xl shadow-sm p-6 border">
+      <h2 class="text-xl font-semibold">Results</h2>
+      <div id="resultsEmpty" class="text-slate-600 mt-2">No open tickets found.</div>
+      <div id="resultsTableWrap" class="mt-4 overflow-x-auto hidden">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="text-left border-b">
+              <th class="py-2 pr-4">Ticket #</th>
+              <th class="py-2 pr-4">Status</th>
+              <th class="py-2 pr-4">Due</th>
+              <th class="py-2 pr-4">Amount</th>
+              <th class="py-2 pr-4"></th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <p id="toast" class="fixed left-1/2 -translate-x-1/2 bottom-4 bg-slate-900 text-white text-sm px-4 py-2 rounded-full shadow hidden"></p>
+  </main>
+
+  <footer class="py-10 text-center text-sm text-slate-500">
+    <p>Payments processed by Stripe. Need help? <a href="#" class="underline">Contact support</a>.</p>
+  </footer>
+
+<script>
+const SITE = window.location.origin;
+
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.remove('hidden');
+  setTimeout(()=> el.classList.add('hidden'), 3000);
+}
+
+function fmtUSD(cents){ return `$${(Number(cents||0)/100).toFixed(2)}` }
+
+function toE164(s){
+  s = (s||'').replace(/[^0-9+]/g,'');
+  if (!s) return '';
+  if (!s.startsWith('+')) {
+    if (s.length === 10) return '+1'+s; // assume US
+    if (s.length === 11 && s.startsWith('1')) return '+'+s;
+  }
+  return s;
+}
+
+async function postJSON(url, data){
+  const r = await fetch(url, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(data)});
+  if (!r.ok) throw new Error('Request failed');
+  return r.json();
+}
+
+function renderTickets(list){
+  const card = document.getElementById('resultsCard');
+  const empty = document.getElementById('resultsEmpty');
+  const wrap = document.getElementById('resultsTableWrap');
+  const body = document.getElementById('resultsBody');
+  card.classList.remove('hidden');
+  body.innerHTML = '';
+  if (!list || !list.length) {
+    empty.classList.remove('hidden');
+    wrap.classList.add('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  wrap.classList.remove('hidden');
+  for (const t of list){
+    const tr = document.createElement('tr');
+    tr.className = 'border-b hover:bg-slate-50';
+    const due = t.due_date ? new Date(t.due_date).toISOString().slice(0,10) : '—';
+    const status = (t.status||'unpaid');
+    tr.innerHTML = `
+      <td class="py-2 pr-4">${t.ticket_number}</td>
+      <td class="py-2 pr-4">${status}</td>
+      <td class="py-2 pr-4">${due}</td>
+      <td class="py-2 pr-4">${fmtUSD(t.amount_cents)}</td>
+      <td class="py-2 pr-4">${status.toLowerCase()!=='paid' ? `<button data-tnum="${t.ticket_number}" class="payBtn inline-flex items-center rounded-md bg-blue-600 text-white px-3 py-1.5 text-sm font-semibold hover:bg-blue-700">Pay</button>` : '<span class="text-slate-500">Paid</span>'}</td>
+    `;
+    body.appendChild(tr);
+  }
+
+  // Wire pay buttons
+  document.querySelectorAll('.payBtn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true; btn.textContent = 'Starting…';
+      try {
+        const tnum = btn.getAttribute('data-tnum');
+        const res = await postJSON('/api/pay', { ticket_number: tnum });
+        if (res && res.url) window.location.href = res.url;
+        else showToast('Could not start checkout');
+      } catch(e){ showToast('Checkout failed'); }
+      finally { btn.disabled = false; btn.textContent = 'Pay'; }
+    });
+  });
+}
+
+// Plate form
+const plateForm = document.getElementById('plateForm');
+plateForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const plate = document.getElementById('plate').value.trim().toUpperCase();
+  const state = document.getElementById('state').value.trim().toUpperCase();
+  const phone = toE164(document.getElementById('phone').value.trim());
+  try {
+    const j = await postJSON('/api/lookup', { plate, state, phone });
+    renderTickets(j.tickets || []);
+    if (phone) showToast('We will text you updates.');
+  } catch(err){ showToast('Lookup failed'); }
+});
+
+// Ticket # form
+const ticketForm = document.getElementById('ticketForm');
+ticketForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const tnum = document.getElementById('ticket_number').value.trim();
+  try {
+    const j = await postJSON('/api/lookup', { ticket_number: tnum });
+    renderTickets(j.tickets || []);
+  } catch(err){ showToast('Lookup failed'); }
+});
+</script>
 </body>
+</html>
