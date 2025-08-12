@@ -1,0 +1,11 @@
+{
+  "rewrites": [
+    { "source": "/api/health", "destination": "/api/router" },
+    { "source": "/api/lookup", "destination": "/api/router" },
+    { "source": "/api/webhooks/stripe", "destination": "/api/router" },
+    { "source": "/api/webhooks/twilio", "destination": "/api/router" },
+    { "source": "/api/tasks/send_due_reminders", "destination": "/api/router" },
+    { "source": "/api/tasks/send_past_due", "destination": "/api/router" },
+    { "source": "/api/admin/sms-log", "destination": "/api/router" }
+  ]
+}
