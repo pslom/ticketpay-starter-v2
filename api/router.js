@@ -111,6 +111,8 @@ module.exports = async (req, res) => {
     return;
   }
 
+  if (method === 'POST' && pathname === '/api/pay') return handleCreateCheckout(req, res, body);
+
   // Fallback
   res.statusCode = 404;
   res.end("Not found");
