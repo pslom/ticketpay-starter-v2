@@ -1,6 +1,6 @@
-// api/router.js — single Serverless Function handling all API routes
+// api/router.js — single Serverless Function handling all API routes on Vercel
 // Requires deps in package.json: pg, stripe, twilio
-// Env needed in Vercel:
+// Env needed in Vercel (Production):
 //   DATABASE_URL
 //   SITE_URL (e.g. https://www.ticketpay.us.com)
 //   ALLOWED_ORIGIN (e.g. https://www.ticketpay.us.com)
@@ -9,8 +9,8 @@
 //   TWILIO_ACCOUNT_SID
 //   TWILIO_AUTH_TOKEN
 //   TWILIO_FROM_NUMBER
-//   TASK_KEY  (random string you’ll use in X-Task-Key header)
-//   SMS_DEEP_LINK_SECRET (optional; used for signing deep links)
+//   TASK_KEY  (random string for cron endpoints)
+//   SMS_DEEP_LINK_SECRET (optional; for signed links)
 
 const { URL } = require('url');
 const crypto = require('crypto');
@@ -41,9 +41,10 @@ function allowedOrigin(req) {
   return origin.startsWith(allowed) || ref.startsWith(allowed);
 }
 
+// ---------- schema & logging ----------
 async function ensureSchema(client) {
-  // Base tables (create if missing)
   await client.query(`
+    -- Subscribers (unchanged)
     CREATE TABLE IF NOT EXISTS subscribers (
       id SERIAL PRIMARY KEY,
       plate TEXT,
@@ -54,6 +55,7 @@ async function ensureSchema(client) {
     );
     CREATE INDEX IF NOT EXISTS idx_sub_phone ON subscribers(phone);
 
+    -- Tickets: ensure table exists
     CREATE TABLE IF NOT EXISTS tickets (
       id SERIAL PRIMARY KEY,
       plate TEXT,
@@ -64,6 +66,23 @@ async function ensureSchema(client) {
       created_at TIMESTAMPTZ DEFAULT now()
     );
 
+    -- Ensure ticket_number column exists
+    ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_number TEXT;
+
+    -- Ensure uniqueness on ticket_number (ignore if it already exists)
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'tickets'::regclass
+          AND conname = 'tickets_ticket_number_key'
+      ) THEN
+        ALTER TABLE tickets
+        ADD CONSTRAINT tickets_ticket_number_key UNIQUE (ticket_number);
+      END IF;
+    END$$;
+
+    -- Audit + SMS tables
     CREATE TABLE IF NOT EXISTS audit_log (
       id SERIAL PRIMARY KEY,
       event_type TEXT,
@@ -83,23 +102,21 @@ async function ensureSchema(client) {
     CREATE INDEX IF NOT EXISTS idx_sms_sent_recent ON sms_sent(phone, ticket_number, sent_at);
   `);
 
-  // === "MIGRATIONS" for existing DBs ===
-  // Add missing columns safely (Postgres supports IF NOT EXISTS here)
-  await client.query(`ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS opted_out BOOLEAN DEFAULT false`);
-
-  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ticket_number TEXT`);
-  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS amount_cents INT`);
-  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS due_date TIMESTAMPTZ`);
-  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS status TEXT`);
-  await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now()`);
-  await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tickets_ticket_number ON tickets(ticket_number)`);
-
-  // One‑time backfill: create a unique ticket_number for rows that don't have one
+  // Backfill any missing/blank ticket_number values with a deterministic value
+  // Format: STATE-YYYYMMDD-ID (fallback TKT if state missing)
   await client.query(`
-    UPDATE tickets
-       SET ticket_number = state || '-' || plate || '-' || id
-     WHERE (ticket_number IS NULL OR ticket_number = '')
-       AND plate IS NOT NULL AND state IS NOT NULL AND id IS NOT NULL;
+    UPDATE tickets t
+      SET ticket_number = COALESCE(ticket_number, '')
+      WHERE ticket_number IS NULL;
+
+    UPDATE tickets t
+      SET ticket_number = CONCAT(
+        COALESCE(NULLIF(t.state, ''), 'TKT'), '-',
+        to_char(COALESCE(t.created_at, now()), 'YYYYMMDD'), '-',
+        t.id::text
+      )
+      WHERE (t.ticket_number = '' OR t.ticket_number IS NULL)
+        AND t.id IS NOT NULL;
   `);
 }
 
@@ -154,6 +171,12 @@ function verifyTwilioSig(req, bodyParams) {
   const proto = req.headers['x-forwarded-proto'] || 'https';
   const url = `${proto}://${req.headers.host}${req.url}`;
   return twilio.validateRequest(tok, sig, url, bodyParams);
+}
+
+function requireTaskKey(req) {
+  const need = process.env.TASK_KEY || '';
+  if (!need) return true; // if not set, allow (dev)
+  return (req.headers['x-task-key'] || '') === need;
 }
 
 // ---------- handlers ----------
@@ -386,12 +409,6 @@ async function handleTwilioWebhook(req, res, body) {
 }
 
 // Reminders (require X-Task-Key auth)
-function requireTaskKey(req) {
-  const need = process.env.TASK_KEY || '';
-  if (!need) return true; // if not set, allow (dev)
-  return (req.headers['x-task-key'] || '') === need;
-}
-
 async function handleDueReminders(req, res) {
   if (!requireTaskKey(req)) return text(res, 403, 'Forbidden');
   const client = await pool().connect();
